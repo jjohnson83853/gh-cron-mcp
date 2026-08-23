@@ -1,0 +1,14 @@
+services:
+  gh-cron-mcp:
+    image: registry.localdomain:5000/gh-cron-mcp:latest
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - PORT=8000
+    volumes:
+      - gh-cron-mcp-data:/data
+
+volumes:
+  gh-cron-mcp-data:
