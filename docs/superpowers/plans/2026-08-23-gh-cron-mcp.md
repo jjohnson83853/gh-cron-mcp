@@ -500,15 +500,17 @@ Expected: PASS (3 tests)
 
 - [ ] **Step 5: Write `app/server.py`** (no dedicated test — thin registration wiring over already-tested `JobTools`)
 
+Note: `mcp` 2.0.0 renamed `FastMCP` to `MCPServer` and moved it to `mcp.server.mcpserver` (confirmed against the installed package — `mcp.server.fastmcp` no longer exists as of this version).
+
 ```python
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from .job_tools import JobTools
 from .scheduler_service import SchedulerService
 
 
-def build_server(scheduler: SchedulerService) -> FastMCP:
-    mcp = FastMCP("gh-cron-mcp")
+def build_server(scheduler: SchedulerService) -> MCPServer:
+    mcp = MCPServer("gh-cron-mcp")
     tools = JobTools(scheduler)
 
     mcp.add_tool(tools.add_job, name="add_job", description="Schedule a GitHub repo's script to run on a recurring cron schedule.")
@@ -531,9 +533,7 @@ from .server import build_server
 def main() -> None:
     scheduler = SchedulerService(github_token=os.environ.get("GITHUB_TOKEN"))
     mcp = build_server(scheduler)
-    mcp.settings.host = "0.0.0.0"
-    mcp.settings.port = int(os.environ.get("PORT", "8000"))
-    mcp.run(transport="streamable-http")
+    mcp.run(transport="streamable-http", host="0.0.0.0", port=int(os.environ.get("PORT", "8000")))
 
 
 if __name__ == "__main__":
@@ -564,7 +564,7 @@ git commit -m "feat: wire MCP tools (add_job/remove_job/list_jobs/run_job_now/ge
 - [ ] **Step 1: Write `requirements.txt`**
 
 ```
-mcp>=1.2.0
+mcp==2.0.0
 apscheduler>=3.10,<4
 sqlalchemy>=2.0
 ```
