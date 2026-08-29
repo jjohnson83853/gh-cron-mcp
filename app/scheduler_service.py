@@ -1,6 +1,7 @@
 import logging
 from typing import Optional
 
+from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_MISSED, JobExecutionEvent
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -22,7 +23,27 @@ class SchedulerService:
             jobstores={"default": SQLAlchemyJobStore(url=f"sqlite:///{db_path}")}
         )
         self._token = github_token
+        # A missed cron fire (container down/redeploying at the scheduled time)
+        # otherwise produces zero log lines anywhere — the exact 2am failure
+        # that leaves no evidence. EVENT_JOB_ERROR also catches anything that
+        # escapes executor.run_job's own try/except (there shouldn't be any,
+        # but this is the last line of defense before it's silently dropped).
+        self._scheduler.add_listener(self._on_job_event, EVENT_JOB_MISSED | EVENT_JOB_ERROR)
         self._scheduler.start()
+
+    def _on_job_event(self, event: JobExecutionEvent) -> None:
+        fields = {
+            "job": event.job_id,
+            "scheduled_run_time": event.scheduled_run_time.isoformat() if event.scheduled_run_time else None,
+        }
+        if event.code == EVENT_JOB_MISSED:
+            logger.error("job misfired (scheduled run did not execute)", extra={"extra_fields": fields})
+        else:
+            # event.traceback is already a formatted string, not a traceback
+            # object, so it goes in extra_fields rather than exc_info.
+            fields["exception"] = str(event.exception)
+            fields["traceback"] = event.traceback
+            logger.error("job raised outside its own error handling", extra={"extra_fields": fields})
 
     def shutdown(self) -> None:
         self._scheduler.shutdown(wait=False)

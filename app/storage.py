@@ -9,7 +9,10 @@ LOGS_DIR = DATA_DIR / "logs"
 DB_PATH = DATA_DIR / "scheduler.db"
 STATUS_PATH = DATA_DIR / "status.json"
 
+LOG_CAP_BYTES = 5_000_000
+
 _status_lock = threading.Lock()
+_log_lock = threading.Lock()
 
 
 def ensure_dirs() -> None:
@@ -23,6 +26,21 @@ def log_path(name: str) -> Path:
 
 def repo_path(name: str) -> Path:
     return REPOS_DIR / name
+
+
+def append_log(name: str, text: str) -> None:
+    """Append to a job's log file, dropping the oldest half once it exceeds LOG_CAP_BYTES.
+
+    Nothing rotated this before — an unbounded per-job log eventually fills
+    the data volume and produces unrelated-looking failures elsewhere.
+    """
+    path = log_path(name)
+    with _log_lock:
+        with open(path, "a") as f:
+            f.write(text)
+        if path.stat().st_size > LOG_CAP_BYTES:
+            data = path.read_bytes()[-(LOG_CAP_BYTES // 2):]
+            path.write_bytes(b"...[truncated]...\n" + data)
 
 
 def read_status() -> dict:

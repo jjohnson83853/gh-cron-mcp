@@ -2,22 +2,35 @@
 
 import json
 import logging
+import re
 import sys
 from datetime import datetime, timezone
 
 _SECRET_KEY_MARKERS = ("token", "key", "secret", "password")
+# Scrubs credentials embedded in URLs (e.g. git's own error text echoing back
+# https://x-access-token:ghp_xxx@github.com/...) — key-name redaction alone
+# can't catch a secret sitting inside a string value like this.
+_CREDENTIAL_URL_RE = re.compile(r"://[^/@\s]*@")
+
+
+def scrub_credentials(text: str) -> str:
+    """Scrub credentials embedded in URLs, e.g. in raw git/subprocess output."""
+    return _CREDENTIAL_URL_RE.sub("://***@", text)
+
+
+def _scrub(value):
+    if isinstance(value, str):
+        return scrub_credentials(value)
+    if isinstance(value, dict):
+        return _redact(value)
+    return value
 
 
 def _redact(fields: dict) -> dict:
-    result = {}
-    for k, v in fields.items():
-        if any(m in k.lower() for m in _SECRET_KEY_MARKERS):
-            result[k] = "***REDACTED***"
-        elif isinstance(v, dict):
-            result[k] = _redact(v)
-        else:
-            result[k] = v
-    return result
+    return {
+        k: "***REDACTED***" if any(m in k.lower() for m in _SECRET_KEY_MARKERS) else _scrub(v)
+        for k, v in fields.items()
+    }
 
 
 class JsonFormatter(logging.Formatter):
