@@ -1,10 +1,14 @@
+import logging
 import os
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 from . import storage
+
+logger = logging.getLogger("gh_cron_mcp")
 
 
 def _clone_url_with_token(repo_url: str, token: Optional[str]) -> str:
@@ -42,6 +46,10 @@ def run_job(
     log_file = storage.log_path(name)
     started = datetime.now(timezone.utc).isoformat()
     env = {**os.environ, **(env_vars or {})}
+    job_fields = {"job": name, "repo_url": repo_url, "ref": ref, "entrypoint": entrypoint}
+    start_time = time.monotonic()
+
+    logger.info("job started", extra={"extra_fields": job_fields})
 
     try:
         sync_repo(repo_url, ref, dest, token)
@@ -58,14 +66,33 @@ def run_job(
             "success": result.returncode == 0,
             "returncode": result.returncode,
         }
+        duration_s = round(time.monotonic() - start_time, 2)
+        log_level = logger.info if result.returncode == 0 else logger.error
+        log_level(
+            "job finished",
+            extra={"extra_fields": {**job_fields, **status, "duration_s": duration_s}},
+        )
     except subprocess.TimeoutExpired:
         status = {"last_run": started, "success": False, "returncode": None, "error": "timeout"}
         with open(log_file, "a") as f:
             f.write(f"\n=== run {started} TIMED OUT after {timeout}s ===\n")
+        logger.error(
+            "job timed out",
+            extra={"extra_fields": {**job_fields, "timeout_s": timeout}},
+        )
     except subprocess.CalledProcessError as e:
         status = {"last_run": started, "success": False, "returncode": e.returncode, "error": e.stderr}
         with open(log_file, "a") as f:
             f.write(f"\n=== run {started} git sync failed ===\n{e.stderr}\n")
+        logger.error(
+            "job git sync failed",
+            extra={"extra_fields": {**job_fields, "returncode": e.returncode, "stderr": e.stderr}},
+        )
+    except Exception as e:
+        status = {"last_run": started, "success": False, "returncode": None, "error": str(e)}
+        with open(log_file, "a") as f:
+            f.write(f"\n=== run {started} unexpected error ===\n{e}\n")
+        logger.error("job failed unexpectedly", extra={"extra_fields": job_fields}, exc_info=True)
 
     storage.write_job_status(name, status)
     return status

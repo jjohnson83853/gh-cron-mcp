@@ -1,3 +1,4 @@
+import logging
 from typing import Optional
 
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
@@ -5,6 +6,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from . import executor, storage
+
+logger = logging.getLogger("gh_cron_mcp")
 
 
 class JobNotFound(Exception):
@@ -37,6 +40,14 @@ class SchedulerService:
                 "entrypoint": entrypoint, "env_vars": env_vars, "token": self._token,
             },
         )
+        logger.info(
+            "job scheduled",
+            extra={"extra_fields": {
+                "job": name, "repo_url": repo_url, "ref": ref,
+                "entrypoint": entrypoint, "cron_expr": cron_expr,
+                "env_vars": env_vars or {},
+            }},
+        )
         return self._job_info(name)
 
     def remove_job(self, name: str) -> None:
@@ -45,6 +56,7 @@ class SchedulerService:
             raise JobNotFound(name)
         self._scheduler.remove_job(name)
         storage.remove_job_status(name)
+        logger.info("job removed", extra={"extra_fields": {"job": name}})
 
     def list_jobs(self) -> list:
         return [self._job_info(job.id) for job in self._scheduler.get_jobs()]
@@ -53,6 +65,7 @@ class SchedulerService:
         job = self._scheduler.get_job(name)
         if job is None:
             raise JobNotFound(name)
+        logger.info("job manually triggered", extra={"extra_fields": {"job": name}})
         return executor.run_job(**job.kwargs)
 
     def get_job_logs(self, name: str, lines: int = 100) -> str:
