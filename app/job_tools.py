@@ -1,5 +1,6 @@
 from typing import Optional
 
+from .executor import JobAlreadyRunning
 from .scheduler_service import JobNotFound, SchedulerService
 
 
@@ -25,6 +26,8 @@ class JobTools:
             return self._scheduler.run_job_now(name)
         except JobNotFound:
             return {"error": f"no job named {name!r}"}
+        except JobAlreadyRunning:
+            return {"error": f"job {name!r} is already running", "skipped": True}
 
     def get_job_logs(self, name: str, lines: int = 100) -> str:
         return self._scheduler.get_job_logs(name, lines)

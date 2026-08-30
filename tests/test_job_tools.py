@@ -1,5 +1,6 @@
 from unittest.mock import MagicMock
 
+from app.executor import JobAlreadyRunning
 from app.job_tools import JobTools
 from app.scheduler_service import JobNotFound
 
@@ -33,3 +34,13 @@ def test_run_job_now_handles_not_found():
     result = tools.run_job_now("ghost")
 
     assert result == {"error": "no job named 'ghost'"}
+
+
+def test_run_job_now_handles_already_running():
+    scheduler = MagicMock()
+    scheduler.run_job_now.side_effect = JobAlreadyRunning("nightly")
+    tools = JobTools(scheduler)
+
+    result = tools.run_job_now("nightly")
+
+    assert result == {"error": "job 'nightly' is already running", "skipped": True}

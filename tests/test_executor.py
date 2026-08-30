@@ -1,6 +1,8 @@
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from app import executor, storage
 
 
@@ -112,3 +114,63 @@ def test_run_job_scrubs_credentials_from_git_failure(tmp_path, monkeypatch, capl
     assert "ghp_supersecrettoken" not in log_content
     failed = [r for r in caplog.records if r.message == "job git sync failed"][0]
     assert "ghp_supersecrettoken" not in failed.extra_fields["stderr"]
+
+
+class TestOverlapGuard:
+    """run_job_now bypasses APScheduler's own max_instances=1 (it calls this
+    function directly, not through the scheduler's execution slot), so a
+    manual trigger can race a scheduled fire or another manual trigger of
+    the same job — this happened in practice against a real deployment,
+    colliding over a fixed IP a Docker-driven entrypoint attaches to."""
+
+    def test_rejects_a_second_trigger_for_an_already_running_job(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(storage, "REPOS_DIR", tmp_path / "data" / "repos")
+        monkeypatch.setattr(storage, "LOGS_DIR", tmp_path / "data" / "logs")
+        monkeypatch.setattr(storage, "STATUS_PATH", tmp_path / "data" / "status.json")
+
+        executor._running_jobs.add("busy-job")
+        try:
+
+            def _fail_if_called(*args, **kwargs):
+                raise AssertionError("run_job body must not execute for a rejected overlap")
+
+            monkeypatch.setattr(executor, "sync_repo", _fail_if_called)
+
+            with pytest.raises(executor.JobAlreadyRunning):
+                executor.run_job(
+                    name="busy-job", repo_url="unused", ref="main",
+                    entrypoint="true", env_vars=None, token=None,
+                )
+        finally:
+            executor._running_jobs.discard("busy-job")
+
+    def test_clears_the_running_marker_after_completion(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(storage, "REPOS_DIR", tmp_path / "data" / "repos")
+        monkeypatch.setattr(storage, "LOGS_DIR", tmp_path / "data" / "logs")
+        monkeypatch.setattr(storage, "STATUS_PATH", tmp_path / "data" / "status.json")
+        fixture_repo = _init_fixture_repo(tmp_path)
+
+        executor.run_job(
+            name="test-job", repo_url=str(fixture_repo), ref="main",
+            entrypoint="sh run.sh", env_vars=None, token=None,
+        )
+
+        assert "test-job" not in executor._running_jobs
+
+    def test_clears_the_running_marker_even_on_unexpected_exception(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(storage, "REPOS_DIR", tmp_path / "data" / "repos")
+        monkeypatch.setattr(storage, "LOGS_DIR", tmp_path / "data" / "logs")
+        monkeypatch.setattr(storage, "STATUS_PATH", tmp_path / "data" / "status.json")
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("simulated unexpected failure")
+
+        monkeypatch.setattr(executor, "sync_repo", _boom)
+
+        status = executor.run_job(
+            name="test-job", repo_url="unused", ref="main",
+            entrypoint="true", env_vars=None, token=None,
+        )
+
+        assert status["success"] is False
+        assert "test-job" not in executor._running_jobs

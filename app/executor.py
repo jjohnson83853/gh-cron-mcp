@@ -1,6 +1,7 @@
 import logging
 import os
 import subprocess
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,6 +13,22 @@ from .logging_config import scrub_credentials
 logger = logging.getLogger("gh_cron_mcp")
 
 _TAIL_CHARS = 2000
+
+# APScheduler's max_instances=1 only protects a job against overlapping with
+# itself *when triggered by the scheduler*. It has no visibility into
+# run_job_now, which calls this function directly — so a manual trigger can
+# still race a scheduled fire (or another manual trigger) of the same job.
+# This guard lives here, inside the plain module-level function, rather than
+# on SchedulerService, because SQLAlchemyJobStore persists the scheduled
+# callable by reference for restart-recovery — routing scheduled execution
+# through a bound method on a stateful object (holding live locks/threads)
+# would break that pickling.
+_running_jobs: set[str] = set()
+_running_lock = threading.Lock()
+
+
+class JobAlreadyRunning(Exception):
+    pass
 
 
 def _clone_url_with_token(repo_url: str, token: Optional[str]) -> str:
@@ -58,6 +75,15 @@ def run_job(
     token: Optional[str],
     timeout: int = 1800,
 ) -> dict:
+    with _running_lock:
+        if name in _running_jobs:
+            logger.warning(
+                "job trigger skipped, already running",
+                extra={"extra_fields": {"job": name}},
+            )
+            raise JobAlreadyRunning(name)
+        _running_jobs.add(name)
+
     storage.ensure_dirs()
     dest = storage.repo_path(name)
     started = datetime.now(timezone.utc).isoformat()
@@ -71,54 +97,58 @@ def run_job(
     logger.info("job started", extra={"extra_fields": job_fields})
 
     try:
-        sync_repo(repo_url, ref, dest, token)
-        job_fields["commit"] = _head_commit(dest)
-        result = subprocess.run(
-            entrypoint, shell=True, cwd=dest, env=env,
-            capture_output=True, text=True, timeout=timeout,
-        )
-        storage.append_log(
-            name,
-            scrub_credentials(f"\n=== run {started} ===\n{result.stdout}{result.stderr}"),
-        )
-        status = {
-            "last_run": started,
-            "success": result.returncode == 0,
-            "returncode": result.returncode,
-        }
-        duration_s = round(time.monotonic() - start_time, 2)
-        log_fields = {**job_fields, **status, "duration_s": duration_s}
-        if result.returncode == 0:
-            logger.info("job finished", extra={"extra_fields": log_fields})
-        else:
-            # Surface the actual failure reason inline — the plaintext log file
-            # has the full output, but "why" shouldn't need a second tool call.
-            output, truncated = _tail(result.stderr or result.stdout)
-            log_fields["output_tail"] = scrub_credentials(output)
-            log_fields["output_truncated"] = truncated
-            logger.error("job finished", extra={"extra_fields": log_fields})
-    except subprocess.TimeoutExpired:
-        status = {"last_run": started, "success": False, "returncode": None, "error": "timeout"}
-        storage.append_log(name, f"\n=== run {started} TIMED OUT after {timeout}s ===\n")
-        timeout_fields = {**job_fields, "timeout_s": timeout}
-        if docker_host:
-            # The killed local subprocess does not stop a remote container it
-            # started (e.g. via `docker run`) — it's still running on the
-            # Docker host DOCKER_HOST points at until it exits or is reaped.
-            timeout_fields["note"] = "remote container (if any) may still be running on the Docker host"
-        logger.error("job timed out", extra={"extra_fields": timeout_fields})
-    except subprocess.CalledProcessError as e:
-        stderr = scrub_credentials(e.stderr or "")
-        status = {"last_run": started, "success": False, "returncode": e.returncode, "error": stderr}
-        storage.append_log(name, f"\n=== run {started} git sync failed ===\n{stderr}\n")
-        logger.error(
-            "job git sync failed",
-            extra={"extra_fields": {**job_fields, "returncode": e.returncode, "stderr": stderr}},
-        )
-    except Exception as e:
-        status = {"last_run": started, "success": False, "returncode": None, "error": str(e)}
-        storage.append_log(name, f"\n=== run {started} unexpected error ===\n{e}\n")
-        logger.error("job failed unexpectedly", extra={"extra_fields": job_fields}, exc_info=True)
+        try:
+            sync_repo(repo_url, ref, dest, token)
+            job_fields["commit"] = _head_commit(dest)
+            result = subprocess.run(
+                entrypoint, shell=True, cwd=dest, env=env,
+                capture_output=True, text=True, timeout=timeout,
+            )
+            storage.append_log(
+                name,
+                scrub_credentials(f"\n=== run {started} ===\n{result.stdout}{result.stderr}"),
+            )
+            status = {
+                "last_run": started,
+                "success": result.returncode == 0,
+                "returncode": result.returncode,
+            }
+            duration_s = round(time.monotonic() - start_time, 2)
+            log_fields = {**job_fields, **status, "duration_s": duration_s}
+            if result.returncode == 0:
+                logger.info("job finished", extra={"extra_fields": log_fields})
+            else:
+                # Surface the actual failure reason inline — the plaintext log file
+                # has the full output, but "why" shouldn't need a second tool call.
+                output, truncated = _tail(result.stderr or result.stdout)
+                log_fields["output_tail"] = scrub_credentials(output)
+                log_fields["output_truncated"] = truncated
+                logger.error("job finished", extra={"extra_fields": log_fields})
+        except subprocess.TimeoutExpired:
+            status = {"last_run": started, "success": False, "returncode": None, "error": "timeout"}
+            storage.append_log(name, f"\n=== run {started} TIMED OUT after {timeout}s ===\n")
+            timeout_fields = {**job_fields, "timeout_s": timeout}
+            if docker_host:
+                # The killed local subprocess does not stop a remote container it
+                # started (e.g. via `docker run`) — it's still running on the
+                # Docker host DOCKER_HOST points at until it exits or is reaped.
+                timeout_fields["note"] = "remote container (if any) may still be running on the Docker host"
+            logger.error("job timed out", extra={"extra_fields": timeout_fields})
+        except subprocess.CalledProcessError as e:
+            stderr = scrub_credentials(e.stderr or "")
+            status = {"last_run": started, "success": False, "returncode": e.returncode, "error": stderr}
+            storage.append_log(name, f"\n=== run {started} git sync failed ===\n{stderr}\n")
+            logger.error(
+                "job git sync failed",
+                extra={"extra_fields": {**job_fields, "returncode": e.returncode, "stderr": stderr}},
+            )
+        except Exception as e:
+            status = {"last_run": started, "success": False, "returncode": None, "error": str(e)}
+            storage.append_log(name, f"\n=== run {started} unexpected error ===\n{e}\n")
+            logger.error("job failed unexpectedly", extra={"extra_fields": job_fields}, exc_info=True)
 
-    storage.write_job_status(name, status)
-    return status
+        storage.write_job_status(name, status)
+        return status
+    finally:
+        with _running_lock:
+            _running_jobs.discard(name)
