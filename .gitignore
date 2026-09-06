@@ -1,0 +1,12 @@
+# Never commit private keys / SSH material
+secrets/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Runtime data
+*.db
+*.db-journal

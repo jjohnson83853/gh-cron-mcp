@@ -9,6 +9,8 @@ services:
       - PORT=8000
     volumes:
       - gh-cron-mcp-data:/data
+      - "${SSH_PRIVATE_KEY_PATH:-./secrets/id_ed25519}:/root/.ssh/id_ed25519:ro"
+      - "${SSH_KNOWN_HOSTS_PATH:-./secrets/known_hosts}:/root/.ssh/known_hosts:ro"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s

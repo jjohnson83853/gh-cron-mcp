@@ -6,6 +6,12 @@ import pytest
 from app import executor, storage
 
 
+def test_clone_url_with_token_preserves_ssh_url():
+    repo_url = "git@github.com:jjohnson83853/gh-cron-mcp.git"
+
+    assert executor._clone_url_with_token(repo_url, "ghp_token") == repo_url
+
+
 def _init_fixture_repo(tmp_path: Path) -> Path:
     repo = tmp_path / "fixture_repo"
     repo.mkdir()
