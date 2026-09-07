@@ -167,8 +167,8 @@ into this feature's task plan.
 
 ## Constraints
 
-- PR-based delivery: `engineer` implements + tests, `iac-devops` opens the
-  PR, user reviews/merges, user builds and pushes
+- Direct delivery: `engineer` implements + tests; changes are pushed
+  straight to `main` (this repo has no PR flow); user builds and pushes
   `registry.localdomain:5000/gh-cron-mcp:latest`.
 - gh-cron-mcp is an always-on compose service → image pickup is via the
   existing Watchtower, not a pull-before-run hook.

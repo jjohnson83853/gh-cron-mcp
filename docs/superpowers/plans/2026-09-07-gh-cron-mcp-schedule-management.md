@@ -98,7 +98,7 @@ FR7 (AC7.2).
   `{job, cron_expr, paused}` only → return `_job_info(name)`.
   If the `next_run_time=None`-on-re-add assumption fails (design's labeled
   fallback): re-add actively, then call `pause_job(name)` immediately, and
-  note the deviation in the PR.
+  note the deviation in the commit message.
 - [ ] Verify: all tests green.
 
 **Acceptance:** FR1 (AC1.1–AC1.5), FR6 (AC6.1), FR7 (AC7.1), FR8 (AC8.1).
@@ -162,10 +162,10 @@ touched.
 
 ## IaC-DevOps tasks
 
-### Task D1 — PR + deploy
+### Task D1 — Push to main + deploy
 
-- [ ] Open PR containing E1–E5 changes (code + tests + no doc drift); link
-  both spec docs. User reviews and merges.
+- [ ] Commit E1–E5 changes (code + tests + spec docs, no doc drift) and push
+  directly to `main` (no PR flow in this repo).
 - [ ] User builds and pushes
   `registry.localdomain:5000/gh-cron-mcp:latest` (standard local build; no
   CI — per environment rules).

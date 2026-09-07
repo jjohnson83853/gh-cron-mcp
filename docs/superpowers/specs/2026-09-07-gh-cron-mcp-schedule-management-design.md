@@ -213,8 +213,9 @@ Mirrors existing patterns exactly:
 
 ## Deployment / rollout
 
-- Standard PR flow: engineer → tests green → iac-devops PR → user merges →
-  user builds/pushes `registry.localdomain:5000/gh-cron-mcp:latest`.
+- Direct push to `main` (no PR flow in this repo): engineer → tests green →
+  commit + push to `main` → user builds/pushes
+  `registry.localdomain:5000/gh-cron-mcp:latest`.
 - gh-cron-mcp is an always-on service → **Watchtower** picks the image up;
   no pull-before-run hook applies.
 - **No data migration:** paused state rides the jobstore's existing
