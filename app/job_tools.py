@@ -31,3 +31,23 @@ class JobTools:
 
     def get_job_logs(self, name: str, lines: int = 100) -> str:
         return self._scheduler.get_job_logs(name, lines)
+
+    def update_job_schedule(self, name: str, cron_expr: str) -> dict:
+        try:
+            return self._scheduler.update_job_schedule(name, cron_expr)
+        except JobNotFound:
+            return {"error": f"no job named {name!r}"}
+        except ValueError as exc:
+            return {"error": f"invalid cron_expr {cron_expr!r}: {exc}"}
+
+    def pause_job(self, name: str) -> dict:
+        try:
+            return self._scheduler.pause_job(name)
+        except JobNotFound:
+            return {"error": f"no job named {name!r}"}
+
+    def resume_job(self, name: str) -> dict:
+        try:
+            return self._scheduler.resume_job(name)
+        except JobNotFound:
+            return {"error": f"no job named {name!r}"}
