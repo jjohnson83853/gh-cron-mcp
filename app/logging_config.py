@@ -59,5 +59,9 @@ def setup_logging(name: str = "gh_cron_mcp") -> logging.Logger:
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(JsonFormatter())
     logger.addHandler(handler)
+    # The MCP framework adds its own plain-text handler on the root logger;
+    # without this every record ships twice (plain on stderr, JSON on stdout)
+    # and log shippers see duplicated, differently-formatted events.
+    logger.propagate = False
 
     return logger
