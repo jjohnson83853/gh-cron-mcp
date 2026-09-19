@@ -180,3 +180,93 @@ class TestOverlapGuard:
 
         assert status["success"] is False
         assert "test-job" not in executor._running_jobs
+
+
+class TestTimeoutOrphanReaping:
+    """A timed-out job's killed subprocess leaves a remote container it
+    started (via DOCKER_HOST `docker run`) running forever. Regression
+    lock for the 2026-09-19 orphaned-container defect."""
+
+    def _storage_env(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(storage, "REPOS_DIR", tmp_path / "data" / "repos")
+        monkeypatch.setattr(storage, "LOGS_DIR", tmp_path / "data" / "logs")
+        monkeypatch.setattr(storage, "STATUS_PATH", tmp_path / "data" / "status.json")
+
+    def test_reaps_only_containers_started_during_the_run(self, tmp_path, monkeypatch, caplog):
+        self._storage_env(tmp_path, monkeypatch)
+        fixture_repo = _init_fixture_repo(tmp_path)
+
+        ps_calls = {"n": 0}
+
+        def _fake_ps_ids(env):
+            ps_calls["n"] += 1
+            if ps_calls["n"] == 1:
+                return {"pre-existing-1"}
+            return {"pre-existing-1", "orphan-1", "orphan-2"}
+
+        monkeypatch.setattr(executor, "_docker_ps_ids", _fake_ps_ids)
+        reaped = []
+
+        def _fake_stop_and_remove(container_id, env):
+            reaped.append(container_id)
+            return True
+
+        monkeypatch.setattr(executor, "_stop_and_remove", _fake_stop_and_remove)
+
+        with caplog.at_level("ERROR", logger="gh_cron_mcp"):
+            status = executor.run_job(
+                name="test-job", repo_url=str(fixture_repo), ref="main",
+                entrypoint="sleep 30", env_vars={"DOCKER_HOST": "tcp://fake-host:2375"},
+                token=None, timeout=1,
+            )
+
+        assert status["success"] is False
+        assert status["error"] == "timeout"
+        timed_out = [r for r in caplog.records if r.message == "job timed out"][0]
+        assert timed_out.extra_fields["orphaned_containers_reaped"] == ["orphan-1", "orphan-2"]
+        assert reaped == ["orphan-1", "orphan-2"]
+
+    def test_no_snapshot_means_no_cleanup_attempt(self, tmp_path, monkeypatch, caplog):
+        self._storage_env(tmp_path, monkeypatch)
+        fixture_repo = _init_fixture_repo(tmp_path)
+
+        def _fail_if_called(*args, **kwargs):
+            raise AssertionError("cleanup must not run without a pre-run snapshot")
+
+        monkeypatch.setattr(executor, "_docker_ps_ids", _fail_if_called)
+        monkeypatch.setattr(executor, "_stop_and_remove", _fail_if_called)
+
+        with caplog.at_level("ERROR", logger="gh_cron_mcp"):
+            status = executor.run_job(
+                name="test-job", repo_url=str(fixture_repo), ref="main",
+                entrypoint="sleep 30", env_vars=None, token=None, timeout=1,
+            )
+
+        assert status["success"] is False
+
+    def test_unreachable_docker_does_not_crash_the_timeout_path(self, tmp_path, monkeypatch, caplog):
+        self._storage_env(tmp_path, monkeypatch)
+        fixture_repo = _init_fixture_repo(tmp_path)
+
+        ps_calls = {"n": 0}
+
+        def _fake_ps_ids(env):
+            ps_calls["n"] += 1
+            if ps_calls["n"] == 1:
+                return {"pre-existing-1"}
+            return None
+
+        monkeypatch.setattr(executor, "_docker_ps_ids", _fake_ps_ids)
+        monkeypatch.setattr(executor, "_stop_and_remove", lambda *a, **k: pytest.fail("must not stop anything"))
+
+        with caplog.at_level("ERROR", logger="gh_cron_mcp"):
+            status = executor.run_job(
+                name="test-job", repo_url=str(fixture_repo), ref="main",
+                entrypoint="sleep 30", env_vars={"DOCKER_HOST": "tcp://fake-host:2375"},
+                token=None, timeout=1,
+            )
+
+        assert status["success"] is False
+        assert status["error"] == "timeout"
+        timed_out = [r for r in caplog.records if r.message == "job timed out"][0]
+        assert "docker unreachable" in timed_out.extra_fields["note"]
