@@ -10,3 +10,7 @@ venv/
 # Runtime data
 *.db
 *.db-journal
+
+# Coverage output
+.coverage
+htmlcov/
